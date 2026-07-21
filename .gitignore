@@ -1,0 +1,25 @@
+# Datos de participantes (NO versionar por privacidad/ética)
+data/
+*.csv
+
+# Artículos con copyright (no redistribuir en repo público)
+*.pdf
+
+# Documentos internos / protocolos (no publicar)
+*.docx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PsychoPy
+*.psydat
+lastrun.log
+*.log
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
