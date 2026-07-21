@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo — Castigo instrumental</title>
+<style>
+  html,body{margin:0;height:100%;background:#4d4d4d;color:#eee;
+            font-family:Arial,Helvetica,sans-serif;overflow:hidden}
+  #wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{background:#4d4d4d;max-width:100%;max-height:100%}
+  #overlay{position:absolute;inset:0;display:flex;flex-direction:column;
+           align-items:center;justify-content:center;text-align:center;padding:6vh 8vw}
+  #overlay h1{font-size:clamp(20px,3vw,34px);margin:.2em 0}
+  #overlay p{font-size:clamp(15px,1.7vw,20px);line-height:1.5;max-width:820px}
+  .btn{margin:10px;padding:14px 26px;font-size:18px;border:none;border-radius:8px;
+       background:#2f7bd6;color:#fff;cursor:pointer}
+  .btn:hover{background:#3d8ded}
+  .btn.alt{background:#5aa469}
+  .btn.alt:hover{background:#6bbb7c}
+  .hidden{display:none!important}
+  .hint{color:#bbb;font-size:14px;margin-top:18px}
+  a{color:#8fd0ff}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="900" height="600"></canvas></div>
+<div id="overlay"></div>
+
+<script>
+"use strict";
+// ============================================================
+//  DEMO WEB del experimento de castigo instrumental (PsychoPy → JS)
+//  Análogo humano de Varas, Dickinson & Perez (2026).
+//  Versión ABREVIADA para demostración en navegador. No recolecta datos reales.
+// ============================================================
+
+// ── Parámetros (DEMO) ──────────────────────────────────────
+const TRAIN_DUR = 25, PUNISH_DUR = 25, TEST_DUR = 25;   // s por bloque
+const N_TRAIN_BLOCKS = 2, N_PUNISH_BLOCKS = 2;
+const RI_T = 6.0;            // media del RI de fichas (s)
+const TARGET_SOUNDS = 5;     // sonidos objetivo por bloque a tasa basal
+const N_REVAL = 4;           // eventos de revalorización
+const COIN_FLASH = 0.5;      // s
+const PLUS_FLASH = 0.9;      // s
+const POINTS_PER_TOKEN = 10;
+const POINTS_PER_REVAL = 50;
+const ISI_MIN = 2.0, ISI_MAX = 4.0;   // ITI revalorización (s)
+const SOUND_WAIT = 0.6;      // espera tras disparar sonido (s)
+
+const KEY_TOKEN = {q:'blue', p:'red'};
+const COL = {blue:'#3a3aff', red:'#ff5a5a', gold:'#ffcc44', green:'#5ad46a',
+             box:'#bfbfbf', boxLine:'#1a1a1a', gray:'#bfbfbf'};
+
+// ── Estado global ──────────────────────────────────────────
+const STATE = {points:0, fr:0, group:'contracond',
+               punished:'q', control:'p', participant:'demo'};
+let GCK = 0;                 // t0 global
+const LOG = [];             // filas de datos
+
+// ── Canvas ─────────────────────────────────────────────────
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+const KEYPOS = {q:{x:250,y:300}, p:{x:650,y:300}};
+const KEYSIZE = 96;
+const overlay = document.getElementById('overlay');
+
+// ── Sonido aversivo ────────────────────────────────────────
+let bang = null;
+try { bang = new Audio('loud_bang.wav'); bang.preload = 'auto'; } catch(e){}
+function playAversive(){
+  if(!bang) return;
+  try { const c = bang.cloneNode(); c.volume = 1.0; c.play().catch(()=>{}); }
+  catch(e){}
+}
+
+// ── Utilidades ─────────────────────────────────────────────
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const rngExp = mean => -Math.log(1 - Math.random()) * mean;
+const rand = (a,b) => a + Math.random()*(b-a);
+const now = () => performance.now();
+
+function logRow(o){
+  LOG.push(Object.assign({
+    participant:STATE.participant, group:STATE.group,
+    punished_key:STATE.punished, control_key:STATE.control, fr:STATE.fr,
+    phase:'', session:'', block:'', t_block:'', t_global:((now()-GCK)/1000).toFixed(3),
+    event:'', key:'', token_color:'', token_earned:0, sound_played:0,
+    points:STATE.points, rss:'', last_key:'',
+    resp_q:'', resp_p:'', tokens_block:'', sounds_block:''
+  }, o));
+}
+
+// ── Dibujo ─────────────────────────────────────────────────
+function clear(){ ctx.fillStyle='#4d4d4d'; ctx.fillRect(0,0,W,H); }
+function drawKeys(){
+  for(const k of ['q','p']){
+    const p = KEYPOS[k];
+    ctx.fillStyle = COL.box; ctx.strokeStyle = COL.boxLine; ctx.lineWidth = 3;
+    ctx.fillRect(p.x-KEYSIZE/2, p.y-KEYSIZE/2, KEYSIZE, KEYSIZE);
+    ctx.strokeRect(p.x-KEYSIZE/2, p.y-KEYSIZE/2, KEYSIZE, KEYSIZE);
+    ctx.fillStyle='#111'; ctx.font='bold 46px Arial';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(k.toUpperCase(), p.x, p.y);
+  }
+}
+function drawCoin(color){
+  ctx.beginPath(); ctx.arc(W/2, 150, 34, 0, 2*Math.PI);
+  ctx.fillStyle = COL[color]||'#fff'; ctx.fill();
+}
+function drawHUD(remaining, showPts){
+  ctx.fillStyle = COL.gray; ctx.font='24px Arial';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  const mm = String(Math.floor(remaining/60)).padStart(2,'0');
+  const ss = String(Math.floor(remaining%60)).padStart(2,'0');
+  ctx.fillText(`${mm}:${ss}`, W/2, 40);
+  if(showPts) ctx.fillText(`Puntos: ${STATE.points}`, W/2, H-40);
+}
+function drawFixation(){ clear(); ctx.fillStyle=COL.gray; ctx.font='48px Arial';
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('+', W/2, H/2); }
+function drawPlus(txt){ ctx.fillStyle=COL.green; ctx.font='bold 64px Arial';
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(txt, W/2, H/2); }
+
+// ── Pantalla de mensaje (espera Espacio o botón) ───────────
+function showMsg(html, btnLabel='Continuar (Espacio)'){
+  return new Promise(resolve=>{
+    overlay.classList.remove('hidden');
+    overlay.innerHTML = html + `<div><button class="btn" id="cont">${btnLabel}</button></div>`;
+    const done = ()=>{ window.removeEventListener('keydown',onk); overlay.classList.add('hidden'); resolve(); };
+    const onk = e=>{ if(e.code==='Space'){ e.preventDefault(); done(); } };
+    window.addEventListener('keydown', onk);
+    document.getElementById('cont').onclick = done;
+  });
+}
+
+// ── Bloque operante ────────────────────────────────────────
+function runOperantBlock(phase, session, block, duration, deliverSound){
+  return new Promise(resolve=>{
+    const fr = STATE.fr;
+    const tRem = {q:rngExp(RI_T), p:rngExp(RI_T)};
+    const avail = {q:false, p:false};
+    let lastKey=null, rss=0;
+    const resp={q:0,p:0}, tokens={q:0,p:0};
+    let punishCounter=0, nSounds=0;
+    let flashOn=false, flashCol='', flashT=0;
+    const down = {q:false, p:false};
+    const t0 = now(); let prev = t0;
+
+    function press(k){
+      const t = (now()-t0)/1000;
+      resp[k]++;
+      // Changeover
+      let canEarn;
+      if(lastKey===null){ rss=1; canEarn=true; }
+      else if(k===lastKey){ rss++; canEarn=true; }
+      else { rss=1; canEarn=false; }
+      lastKey = k;
+      let earned=false, color='';
+      if(canEarn && avail[k]){
+        earned=true; color=KEY_TOKEN[k]; avail[k]=false; tRem[k]=rngExp(RI_T);
+        tokens[k]++; STATE.points += POINTS_PER_TOKEN;
+        flashOn=true; flashCol=color; flashT=t;
+      }
+      let snd=false;
+      if(deliverSound && k===STATE.punished && fr>0){
+        punishCounter++;
+        if(punishCounter>=fr){ punishCounter=0; playAversive(); snd=true; nSounds++; }
+      }
+      logRow({phase,session,block,t_block:t.toFixed(3),event:'response',key:k,
+              token_color:color,token_earned:earned?1:0,sound_played:snd?1:0,
+              rss,last_key:lastKey});
+    }
+
+    function onKey(e){
+      const k = e.key.toLowerCase();
+      if((k==='q'||k==='p') && !e.repeat && !down[k]){ down[k]=true; press(k); }
+    }
+    function onKeyUp(e){ const k=e.key.toLowerCase(); if(k==='q'||k==='p') down[k]=false; }
+    function onClick(e){
+      const r = cv.getBoundingClientRect();
+      const x = (e.clientX-r.left)*(W/r.width), y=(e.clientY-r.top)*(H/r.height);
+      for(const k of ['q','p']){ const p=KEYPOS[k];
+        if(Math.abs(x-p.x)<=KEYSIZE/2 && Math.abs(y-p.y)<=KEYSIZE/2){ press(k); break; } }
+    }
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKeyUp);
+    cv.addEventListener('pointerdown', onClick);
+
+    function frame(){
+      const t=(now()-t0)/1000, dt=(now()-prev)/1000; prev=now();
+      if(t>=duration){
+        window.removeEventListener('keydown',onKey);
+        window.removeEventListener('keyup',onKeyUp);
+        cv.removeEventListener('pointerdown',onClick);
+        logRow({phase,session,block,t_block:duration.toFixed(3),event:'block_end',
+                resp_q:resp.q,resp_p:resp.p,tokens_block:tokens.q+tokens.p,sounds_block:nSounds});
+        resolve({resp,tokens,sounds:nSounds});
+        return;
+      }
+      for(const k of ['q','p']){ if(!avail[k]){ tRem[k]-=dt; if(tRem[k]<=0) avail[k]=true; } }
+      if(flashOn && (t-flashT)>=COIN_FLASH) flashOn=false;
+      clear(); drawKeys();
+      if(flashOn) drawCoin(flashCol);
+      drawHUD(Math.max(0,duration-t), true);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  });
+}
+
+// ── Revalorización ─────────────────────────────────────────
+async function runReval(){
+  for(let i=0;i<N_REVAL;i++){
+    // ITI con fijación
+    const iti = rand(ISI_MIN, ISI_MAX);
+    drawFixation(); await sleep(iti*1000);
+    // Sonido
+    playAversive();
+    logRow({phase:STATE.group==='contracond'?'reval_cc':'reval_hab',
+            event:'reval_sound', sound_played:1});
+    drawFixation(); await sleep(SOUND_WAIT*1000);
+    // Puntos (solo contracondicionamiento)
+    if(STATE.group==='contracond'){
+      STATE.points += POINTS_PER_REVAL;
+      logRow({phase:'reval_cc', event:'reval_points'});
+      clear(); drawCoin('gold'); drawPlus('+'+POINTS_PER_REVAL);
+      await sleep(PLUS_FLASH*1000);
+    }
+  }
+}
+
+// ── Descarga de datos (CSV) ────────────────────────────────
+function downloadCSV(){
+  const cols=['participant','group','punished_key','control_key','fr','phase','session',
+    'block','t_block','t_global','event','key','token_color','token_earned','sound_played',
+    'points','rss','last_key','resp_q','resp_p','tokens_block','sounds_block'];
+  const lines=[cols.join(',')];
+  for(const r of LOG) lines.push(cols.map(c=>r[c]===undefined?'':r[c]).join(','));
+  const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`DEMO_castigo_${STATE.participant}.csv`;
+  a.click();
+}
+
+// ── Flujo principal ────────────────────────────────────────
+async function runExperiment(){
+  GCK = now();
+  STATE.punished = Math.random()<0.5 ? 'q':'p';
+  STATE.control  = STATE.punished==='q' ? 'p':'q';
+
+  await showMsg(`<h1>Bienvenido/a</h1>
+    <p>Tu objetivo es ganar la mayor cantidad de <b>PUNTOS</b> posible presionando
+    las teclas <b>Q</b> y <b>P</b> (o tocándolas en pantalla). A veces entregan una
+    ficha que vale puntos; a veces hay que insistir.</p>
+    <p>Al cambiar de una tecla a la otra, la primera presión en la nueva tecla no
+    entrega ficha: debes presionarla al menos dos veces.</p>`);
+
+  // FASE 1 · Entrenamiento
+  await showMsg(`<h1>Fase 1: Entrenamiento</h1><p>Gana puntos con las teclas.</p>`);
+  let lastTrain;
+  for(let b=1;b<=N_TRAIN_BLOCKS;b++){
+    await showMsg(`<p>Bloque ${b} de ${N_TRAIN_BLOCKS}</p>`, 'Empezar (Espacio)');
+    lastTrain = await runOperantBlock('training',1,b,TRAIN_DUR,false);
+  }
+  // RF individualizado
+  STATE.fr = Math.max(1, Math.round(lastTrain.resp[STATE.punished]/TARGET_SOUNDS));
+  logRow({phase:'fr_calc', event:'fr_set', key:STATE.punished,
+          resp_q:lastTrain.resp.q, resp_p:lastTrain.resp.p});
+
+  // FASE 2 · Castigo
+  await showMsg(`<h1>Fase 2</h1><p>La tarea sigue igual: gana puntos con las teclas.
+    A veces escucharás un <b>sonido fuerte</b> mientras respondes.</p>
+    <p class="hint">(Sube un poco el volumen para la demostración.)</p>`);
+  for(let b=1;b<=N_PUNISH_BLOCKS;b++){
+    await showMsg(`<p>Bloque ${b} de ${N_PUNISH_BLOCKS}</p>`, 'Empezar (Espacio)');
+    await runOperantBlock('punishment',1,b,PUNISH_DUR,true);
+  }
+
+  // FASE 3 · Revalorización
+  await showMsg(`<h1>Fase 3</h1><p>Aquí no usarás las teclas. Solo observa la pantalla
+    y escucha con atención.</p>`);
+  await runReval();
+
+  // FASE 4 · Prueba en extinción (sin sonido)
+  await showMsg(`<h1>Fase 4</h1><p>Vuelve la tarea de las teclas. Sigue ganando puntos
+    como antes.</p>`);
+  await runOperantBlock('extinction_test',1,1,TEST_DUR,false);
+
+  // FASE 5 · Prueba reforzada (vuelve el sonido)
+  await showMsg(`<h1>Fase 5</h1><p>La tarea continúa. Sigue ganando puntos con las teclas.</p>`);
+  await runOperantBlock('reinforced_test',1,1,TEST_DUR,true);
+
+  // Cierre
+  clear();
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `<h1>¡Demostración finalizada!</h1>
+    <p>Puntos totales: <b>${STATE.points}</b><br>
+    Grupo: <b>${STATE.group==='contracond'?'Contracondicionamiento':'Habituación'}</b> ·
+    Tecla castigada: <b>${STATE.punished.toUpperCase()}</b></p>
+    <p class="hint">Versión demo abreviada. El experimento real (en PsychoPy) usa
+    bloques más largos y registra los datos completos.</p>
+    <div>
+      <button class="btn" id="dl">Descargar datos (CSV)</button>
+      <button class="btn alt" id="again">Repetir</button>
+    </div>`;
+  document.getElementById('dl').onclick = downloadCSV;
+  document.getElementById('again').onclick = ()=>location.reload();
+}
+
+// ── Pantalla inicial: elegir grupo ─────────────────────────
+function startScreen(){
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `<h1>Demo — Control por valor del castigo</h1>
+    <p>Análogo humano de Varas, Dickinson &amp; Perez (2026). Demostración corta
+    (~4–5 min) que recorre todas las fases del experimento.</p>
+    <p>Elige el grupo de revalorización que quieres ver:</p>
+    <div>
+      <button class="btn" id="cc">Contracondicionamiento<br>(sonido → puntos)</button>
+      <button class="btn alt" id="hb">Habituación<br>(sonido repetido)</button>
+    </div>
+    <p class="hint">Usa auriculares o sube el volumen. Funciona con teclado (Q/P)
+    o tocando las teclas en pantalla.</p>`;
+  const go = g => { STATE.group=g; STATE.participant = g==='contracond'?'cc':'hb';
+                    overlay.classList.add('hidden'); runExperiment(); };
+  document.getElementById('cc').onclick = ()=>go('contracond');
+  document.getElementById('hb').onclick = ()=>go('habituacion');
+}
+startScreen();
+</script>
+</body>
+</html>
