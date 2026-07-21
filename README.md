@@ -22,8 +22,6 @@ La revalorización del castigador se manipula entre grupos:
 | `LICENSE` | Licencia MIT (código). |
 | `.gitignore` | Excluye datos de participantes y PDFs del repositorio. |
 
-> Los artículos de referencia **no** se incluyen en el repositorio por derechos de autor; ver DOIs en [Referencias](#referencias). La fuente y licencia de `loud_bang.wav` deben verificarse antes de redistribuir.
-
 ## Cómo ejecutarlo
 
 1. Instalar **PsychoPy** (recomendado el *standalone* de [psychopy.org](https://www.psychopy.org), que incluye Python y las dependencias `numpy`, `sound`, etc.).
